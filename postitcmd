@@ -1,0 +1,38 @@
+### Toujours vérifier si une commande est disponible
+command -v jq >/dev/null 2>&1 || { echo "jq est requis mais non installé !"; exit 1; }
+
+### Exécuter une commande et utiliser son résultat comme fichier d’entrée
+diff <(ls dossier1) <(ls dossier2)
+
+### Exécuter des commandes en parallèle 
+commande1 & commande2 & commande3 & wait
+
+### Stopper une commande après un certain temps + SIGTERM
+timeout 5s commande
+### ++ SIGKILL donc à favoriser
+timeout --kill-after=2m 30m script_appli.sh
+
+### Relancer une commande jusqu'à réussite (ex: connexion instable)
+until timeout 5m curl -sSf http://example.com; do
+    echo "Réessai..."
+    sleep 30
+done
+
+### Lance un script en arrière-plan mais le force à ne pas dépasser 10 minutes.
+timeout 10m ./tache_lourde.sh & 
+
+### Remplacement conditionnel de variables avec ${VAR:-default}
+nom=${1:-"Anonyme"}  # Si $1 n'est pas défini, utilise "Anonyme"
+
+### mktemp pour traiter de manière temporaire et jetable
+tmpfile=$(mktemp)
+echo "Traitement" > "$tmpfile"
+rm -f "$tmpfile"  # Nettoyage automatique
+
+### limiter les ressources d'un script
+ulimit -t 60   # Limite l'exécution à 60 secondes
+ulimit -m 50000  # Limite la mémoire à 50 Mo
+
+###  Rediriger toute la sortie du script vers un log :
+exec > >(tee -a script.log) 2>&1
+
