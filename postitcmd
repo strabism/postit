@@ -54,9 +54,7 @@ if ! grep -q "ConfigOption" /chemin/du/fichier_conf; then
   echo "ConfigOption=true" >> /chemin/du/fichier_conf
 fi
 
-### 
-
-a check : 
+### check si on peut écrire dans un fichier
 if [ ! -w /chemin/du/fichier ]; then
   echo "Le fichier n'a pas les permissions d'écriture"
 fi
