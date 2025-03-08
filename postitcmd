@@ -36,3 +36,27 @@ ulimit -m 50000  # Limite la mémoire à 50 Mo
 ###  Rediriger toute la sortie du script vers un log :
 exec > >(tee -a script.log) 2>&1
 
+### clean en cas d'exit
+trap 'rm -f /tmp/fichier_temporaire' EXIT
+
+### Vérifier que les processus sont en cours avant de tenter de les démarrer ou de les arrêter
+if ! pgrep -x "mon_processus" > /dev/null; then
+  systemctl start mon_service
+fi
+
+### Vérifier que les services sont dans l'état souhaité avant de les démarrer/arrêter 
+if ! systemctl is-active --quiet nom_du_service; then
+    systemctl start nom_du_service
+fi
+
+### Ne pas redéfinir des configurations déjà appliquées (check)
+if ! grep -q "ConfigOption" /chemin/du/fichier_conf; then
+  echo "ConfigOption=true" >> /chemin/du/fichier_conf
+fi
+
+### 
+
+a check : 
+if [ ! -w /chemin/du/fichier ]; then
+  echo "Le fichier n'a pas les permissions d'écriture"
+fi
