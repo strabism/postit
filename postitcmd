@@ -23,6 +23,27 @@ timeout 10m ./tache_lourde.sh &
 
 ### Remplacement conditionnel de variables avec ${VAR:-default}
 nom=${1:-"Anonyme"}  # Si $1 n'est pas défini, utilise "Anonyme"
+echo "Bonjour ${USER_NAME:-Invité}"
+
+### check variable
+nom=${1:?"Erreur : Vous devez spécifier un nom en argument"}
+
+### fichier="/home/user/document.txt"
+echo "${fichier#*/}"  # Supprime le premier "/" → "home/user/document.txt"
+echo "${fichier##*/}"  # Supprime tout avant et y compris le dernier "/" → "document.txt"
+nom="fichier.txt"
+echo "${nom%.*}"  # Supprime la plus petite occurrence de ".*" à la fin → "fichier"
+
+### connaitre longueur variable
+chaine="Hello"
+echo "${#chaine}"  # Affiche "5"
+
+### prends les 3 last carac
+echo "${chaine: -3}"  # "def" (prend les 3 derniers caractères)
+
+### convert minuscule et maj
+echo "${chaine,,}"  # Convertit en minuscules
+echo "${chaine^^}"  # Convertit en majuscules
 
 ### mktemp pour traiter de manière temporaire et jetable
 tmpfile=$(mktemp)
