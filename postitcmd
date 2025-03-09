@@ -11,6 +11,7 @@ commande1 & commande2 & commande3 & wait
 timeout 5s commande
 ### ++ SIGKILL donc à favoriser
 timeout --kill-after=2m 30m script_appli.sh
+timeout 5s commande || echo "Commande échouée (timeout)"
 
 ### Relancer une commande jusqu'à réussite (ex: connexion instable)
 until timeout 5m curl -sSf http://example.com; do
@@ -79,3 +80,8 @@ fi
 if [ ! -w /chemin/du/fichier ]; then
   echo "Le fichier n'a pas les permissions d'écriture"
 fi
+
+### qui consomme pcu ?
+ps -eo pid,comm,%cpu --sort=-%cpu | head
+
+
