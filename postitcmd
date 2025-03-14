@@ -1,3 +1,6 @@
+### x-hach
+https://www.vidarholen.net/contents/blog/?p=1035
+
 ### There is a more formal CS definition discussed here: https://en.wikipedia.org/wiki/Guarded_Command_Language and elsewhere but the core idea is pretty simple.
 ### In English: If the test fails then do the action. If the test still fails then the action failed.
 test || action
