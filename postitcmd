@@ -1,3 +1,8 @@
+### There is a more formal CS definition discussed here: https://en.wikipedia.org/wiki/Guarded_Command_Language and elsewhere but the core idea is pretty simple.
+### In English: If the test fails then do the action. If the test still fails then the action failed.
+test || action
+test || die "action failed"
+
 ### change homedir RHEL
 usermod -d /nouveau/chemin/home utilisateur
 
