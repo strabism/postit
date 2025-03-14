@@ -1,3 +1,6 @@
+### change homedir RHEL
+usermod -d /nouveau/chemin/home utilisateur
+
 ### Toujours vérifier si une commande est disponible
 command -v jq >/dev/null 2>&1 || { echo "jq est requis mais non installé !"; exit 1; }
 
