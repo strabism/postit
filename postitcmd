@@ -1,4 +1,8 @@
-### ls -lSr ou ls -lS 
+### liste les files par taille
+ls -lSr ou ls -lS 
+
+### count file number
+ls | nl
 
 ### x-hach
 https://www.vidarholen.net/contents/blog/?p=1035
