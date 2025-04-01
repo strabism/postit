@@ -1,0 +1,231 @@
+use strict;
+use warnings;
+use File::Spec;
+use File::Basename;
+use File::Path qw(make_path);
+use File::Slurp;
+use List::MoreUtils qw(uniq);
+use XML::LibXML;
+
+# Déclaration de la variable $POOL_DIR
+my $POOL_DIR = "pool";  # Répertoire contenant les archives
+
+# Fonction de log
+sub log_message {
+    my ($level, $message) = @_;
+    my $timestamp = localtime;
+    print "$timestamp [$level] $message\n";
+}
+
+# Fonction pour extraire une valeur spécifique d'un fichier .index.toc
+sub extract_value_from_file {
+    my ($file_path, $key) = @_;
+    my $value = "";
+
+    if (-e $file_path) {
+        my @lines = read_file($file_path);
+        foreach my $line (@lines) {
+            if ($line =~ /^$key\s*=\s*(.*)/i) {
+                $value = $1;
+                log_message("INFO", "$key trouvé dans $file_path: $value");
+                last;
+            }
+        }
+    }
+    return $value;
+}
+
+# Fonction pour récupérer toutes les valeurs APPL_TYPE dans le fichier XML
+sub extract_appl_type {
+    my ($xml_file) = @_;
+    my $parser = XML::LibXML->new();
+    my $doc = $parser->parse_file($xml_file);
+    my @appl_types = map { $_->textContent } $doc->findnodes('//@APPL_TYPE');
+    log_message("INFO", "APPL_TYPE extrait: " . join(":", uniq(@appl_types)));
+    return join(":", uniq(@appl_types));
+}
+
+# Fonction pour extraire LIST_COND 
+sub extract_list_cond {
+    my ($xml_file) = @_;
+    my $parser = XML::LibXML->new();
+    my $doc = $parser->parse_file($xml_file);
+    my @list_cond = map { $_->getAttribute('NAME') } $doc->findnodes('//INCOND | //OUTCOND');
+    log_message("INFO", "LIST_COND extrait: " . join(":", uniq(@list_cond)));
+    return join(":", uniq(@list_cond));
+}
+
+# Fonction pour récupérer la valeur LAST_UPLOAD
+sub extract_last_upload {
+    my ($xml_file) = @_;
+    my $parser = XML::LibXML->new();
+    my $doc = $parser->parse_file($xml_file);
+    my ($last_upload) = $doc->findnodes('//@LAST_UPLOAD');
+    log_message("INFO", "LAST_UPLOAD extrait: " . ($last_upload ? $last_upload->value : "not_set"));
+    return $last_upload ? $last_upload->value : "not_set";
+}
+
+# Fonction pour récupérer la valeur USERDAILY_CHECK
+sub extract_userdaily_check {
+    my ($xml_file) = @_;
+    my $parser = XML::LibXML->new();
+    my $doc = $parser->parse_file($xml_file);
+    my ($userdaily_check) = $doc->findnodes('//@FOLDER_ORDER_METHOD');
+    log_message("INFO", "USERDAILY_CHECK extrait: " . ($userdaily_check ? $userdaily_check->value : "MANUAL"));
+    return $userdaily_check ? $userdaily_check->value : "MANUAL";
+}
+
+# Fonction pour gérer les dépendances générales
+sub check_dependencies {
+    my ($key, $value, $index_file, $ignore_case, $exclude_value) = @_;
+    return if !$value || (defined $exclude_value && $value eq $exclude_value);
+
+    my @list_values = split /:/, $value;
+    my @dependency_results;
+
+    opendir(my $dh_pool, $POOL_DIR) or die "Impossible d'ouvrir $POOL_DIR : $!";
+    my @dirs = grep { -d File::Spec->catfile($POOL_DIR, $_) } readdir($dh_pool);
+    closedir($dh_pool);
+
+    foreach my $val_check (@list_values) {
+        my @exp_tables_for_value;
+        foreach my $dir (@dirs) {
+            my $sub_index_file = File::Spec->catfile($POOL_DIR, $dir, ".index.toc");
+            next if $sub_index_file eq $index_file;
+
+            if (-e $sub_index_file) {
+                log_message("INFO", "Vérification dans $sub_index_file");
+                my @lines = read_file($sub_index_file);
+                foreach my $line (@lines) {
+                    if (($ignore_case && $line =~ /$key.*$val_check/i) || (!$ignore_case && $line =~ /$key.*$val_check/)) {
+                        log_message("INFO", "Correspondance trouvée dans $sub_index_file pour $val_check");
+                        my $exp_table = extract_value_from_file($sub_index_file, "EXP_TABLE");
+                        push @exp_tables_for_value, $exp_table if $exp_table;
+                    }
+                }
+            }
+        }
+
+        if (@exp_tables_for_value) {
+            my $exp_tables_str = join(":", @exp_tables_for_value);
+            push @dependency_results, "$val_check=>$exp_tables_str";
+        }
+    }
+
+    return join(",", @dependency_results);
+}
+
+# Fonction pour vérifier les conditions dans les autres fichiers schedtable.xml
+sub check_condition_in_other_schedtables {
+    my ($list_cond, $dc, $schedtable_file) = @_;
+    my @condition_dependencies;
+
+    # Parcours des répertoires du pool pour chercher les autres fichiers schedtable.xml
+    opendir(my $dh_pool, $POOL_DIR) or die "Impossible d'ouvrir $POOL_DIR : $!";
+    my @dirs = grep { -d File::Spec->catfile($POOL_DIR, $_) } readdir($dh_pool);
+    closedir($dh_pool);
+
+    foreach my $dir (@dirs) {
+        next if $dir eq basename($schedtable_file, ".xml");  # Exclure le dossier de l'archive en cours
+
+        my $schedtable_path = File::Spec->catfile($POOL_DIR, $dir, "schedtable.xml");
+
+        if (-e $schedtable_path) {
+            log_message("INFO", "Recherche des conditions dans $schedtable_path...");
+
+            # Parcourir le fichier XML pour chercher les conditions dans les INCOND et OUTCOND
+            my $parser = XML::LibXML->new();
+            my $doc = eval { $parser->parse_file($schedtable_path) };
+            if ($@) {
+                log_message("ERROR", "Erreur lors de la lecture de $schedtable_path : $@");
+                next;
+            }
+
+            # Recherche des conditions dans INCOND et OUTCOND
+            foreach my $cond_name ($doc->findnodes('//INCOND | //OUTCOND')) {
+                my $cond = $cond_name->getAttribute('NAME');
+                if (grep { $_ eq $cond } split /:/, $list_cond) {
+                    push @condition_dependencies, "$cond=>$schedtable_path";
+                }
+            }
+        }
+    }
+
+    return join(",", @condition_dependencies);
+}
+
+# Lister les fichiers .tar
+opendir(my $dh, $POOL_DIR) or die "Impossible d'ouvrir $POOL_DIR : $!";
+my @archives = grep { /.tar$/ && -f File::Spec->catfile($POOL_DIR, $_) } readdir($dh);
+closedir($dh);
+
+if (!@archives) {
+    log_message("INFO", "Aucune archive trouvée dans $POOL_DIR.");
+    exit 0;
+}
+
+# Pour chaque archive
+foreach my $tar_file (@archives) {
+    my $full_path = File::Spec->catfile($POOL_DIR, $tar_file);
+    my $extract_dir = File::Spec->catfile($POOL_DIR, basename($tar_file, ".tar"));
+
+    if (-d $extract_dir) {
+        log_message("INFO", "[EXTRACTION] L'archive $tar_file est déjà extraite.");
+    } else {
+        log_message("INFO", "Extraction de $tar_file dans $extract_dir...");
+        make_path($extract_dir) unless -d $extract_dir;
+        system("tar -xf $full_path -C $POOL_DIR") == 0 or die "Erreur lors de l'extraction de $tar_file : $!";
+    }
+
+    my $index_file = File::Spec->catfile($extract_dir, ".index.toc");
+    log_message("INFO", "Lecture de $index_file...");
+
+    my %exp_vars;
+    foreach my $key ("EXP_CAL", "EXP_NID", "EXP_NOD", "EXP_LIB", "EXP_TABLE", "EXP_DC") {
+        $exp_vars{$key} = extract_value_from_file($index_file, $key);
+    }
+
+    # Extraction d'APPL_TYPE, NB_COND, LAST_UPLOAD et USERDAILY_CHECK
+    my $schedtable_file = File::Spec->catfile($extract_dir, "schedtable.xml");
+
+    my $appl_type = extract_appl_type($schedtable_file);
+    my $last_upload = extract_last_upload($schedtable_file);
+    my $userdaily_check = extract_userdaily_check($schedtable_file);
+
+    # Récupérer le nombre de conditions
+    my $list_cond = extract_list_cond($schedtable_file);
+    my $nb_cond = ($list_cond) ? scalar(split /:/, $list_cond) : 0;
+
+    log_message("INFO", "APPL_TYPE: $appl_type");
+    log_message("INFO", "NB_COND: $nb_cond");
+    log_message("INFO", "LIST_COND: $list_cond");
+    log_message("INFO", "LAST_UPLOAD: $last_upload");
+    log_message("INFO", "USERDAILY_CHECK: $userdaily_check");
+
+    # Vérification des dépendances
+    my $ad_cal_csv = check_dependencies("EXP_CAL", $exp_vars{EXP_CAL}, $index_file, 1, "STANDARD");
+    my $ad_nid_csv = check_dependencies("EXP_NID", $exp_vars{EXP_NID}, $index_file, 1);
+    my $ad_nod_csv = check_dependencies("EXP_NOD", $exp_vars{EXP_NOD}, $index_file, 1, "SRV_PRIMAIRE");
+    my $ad_lib_csv = check_dependencies("EXP_LIB", $exp_vars{EXP_LIB}, $index_file, 1);
+
+
+    # Si aucune dépendance n'a été trouvée, on les initialise à une chaîne vide
+    $ad_cal_csv = "" unless defined $ad_cal_csv;
+    $ad_nid_csv = "" unless defined $ad_nid_csv;
+    $ad_nod_csv = "" unless defined $ad_nod_csv;
+    $ad_lib_csv = "" unless defined $ad_lib_csv;
+
+    log_message("INFO", "Dépendances CAL=>EXP_TABLE: $ad_cal_csv");
+    log_message("INFO", "Dépendances NID=>EXP_TABLE: $ad_nid_csv");
+    log_message("INFO", "Dépendances NOD=>EXP_TABLE: $ad_nod_csv");
+    log_message("INFO", "Dépendances LIB=>EXP_TABLE: $ad_lib_csv");
+	log_message("INFO", "$exp_vars{EXP_DC}");
+	
+	# Vérification des dépendances
+	my $condition_dependencies = check_condition_in_other_schedtables($list_cond, $exp_vars{"EXP_DC"}, $schedtable_file);
+
+    open my $csv, '>>', "Final.csv" or die "Impossible d'ouvrir Final.csv : $!";
+    print $csv "$appl_type;$nb_cond;$list_cond;$last_upload;$userdaily_check;$ad_cal_csv;$ad_nid_csv;$ad_nod_csv;$ad_lib_csv\n";
+    close $csv;
+}
+
