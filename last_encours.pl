@@ -187,7 +187,18 @@ sub check_condition_in_other_schedtables {
     return join(",", @condition_dependencies);
 }
 
+sub nb_elements_exp {
+    my ($input_string) = @_;  # Variable d'entrée
 
+    # Si la chaîne n'est pas vide, on la sépare par ":" et on retourne le nombre d'éléments
+    my $count = 0;
+    if ($input_string) {
+        my @elements = split /:/, $input_string;
+        $count = scalar @elements;
+    }
+
+    return $count;
+}
 
 # Lister les fichiers .tar
 opendir(my $dh, $POOL_DIR) or die "Impossible d'ouvrir $POOL_DIR : $!";
@@ -222,6 +233,9 @@ foreach my $tar_file (@archives) {
 	my $exp_table_live = extract_value_from_file($index_file, "EXP_TABLE");
 	log_message("@@@@@@@@@@", "######################################");
 	log_message("INFO", "EXP_TABLE: $exp_table_live");
+	my $exp_nod_live = extract_value_from_file($index_file, "EXP_NOD");
+	my $exp_table_nod_count = nb_elements_exp($exp_nod_live);
+	log_message("INFO", "NB_EXP_NOD: $exp_table_nod_count");
 
     # Extraction d'APPL_TYPE, NB_COND, LAST_UPLOAD et USERDAILY_CHECK
     my $schedtable_file = File::Spec->catfile($extract_dir, "schedtable.xml");
@@ -260,9 +274,13 @@ foreach my $tar_file (@archives) {
 	
 	# Vérification des dépendances
 	my $condition_dependencies = check_condition_in_other_schedtables($list_cond, $exp_vars{"EXP_DC"}, $schedtable_file);
-	log_message("dep cond", "$condition_dependencies");
+	log_message("INFO", "Dépendance Conditions : $condition_dependencies");
     open my $csv, '>>', "Final.csv" or die "Impossible d'ouvrir Final.csv : $!";
     print $csv "$appl_type;$nb_cond;$list_cond;$last_upload;$userdaily_check;$ad_cal_csv;$ad_nid_csv;$ad_nod_csv;$ad_lib_csv\n";
     close $csv;
 }
+#echo "$EXP_TABLE;$FOLDER_TYPE;$EXP_DC;$LAST_UPLOAD;$EXP_JOBS;$NB_EXP_NOD;$NB_EXP_NID;$NB_EXP_LIB;$NB_EXP_RES;$NB_COND;$NB_EXP_CAL;$APPL_TYPE;$USERDAILY;$EXP_SHOUT;$RUN_AS;$AD_CAL_CSV;$AD_LIB_CSV;$AD_NOD_CSV;$AD_NOD_NID;$AD_RES_CSV;$AD_USERDAILY_CSV;$AD_COND_CSV" >> Final.csv
+#a inclure : FOLDER_TYPE
+#			 SHOUT
+#			 RUN AS
 
