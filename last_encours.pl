@@ -125,12 +125,6 @@ sub check_dependencies {
     return join(",", @dependency_results);
 }
 
-use strict;
-use warnings;
-use File::Basename;
-use File::Spec;
-use XML::LibXML;
-
 sub check_condition_in_other_schedtables {
     my ($list_cond, $dc, $schedtable_file) = @_;
     my @condition_dependencies;
@@ -200,6 +194,66 @@ sub nb_elements_exp {
     return $count;
 }
 
+sub get_folder_type {
+    my ($schedtable_file) = @_;
+
+    open my $fh, '<', $schedtable_file or die "Impossible d'ouvrir $schedtable_file : $!";
+    while (my $line = <$fh>) {
+        if ($line =~ /<SMART_FOLDER/) {
+            close $fh;
+            return "SMARTFOLDER";
+        }
+    }
+    close $fh;
+    return "FOLDER";
+}
+
+sub get_unique_run_as {
+    my ($schedtable_file) = @_;
+    my %run_as_values;
+
+    # Charger et parser le fichier XML
+    my $parser = XML::LibXML->new();
+    my $doc;
+    eval { $doc = $parser->parse_file($schedtable_file); };
+    if ($@) {
+        die "Erreur XML dans $schedtable_file : $@";
+    }
+
+    # Récupérer toutes les valeurs du champ RUN_AS
+    foreach my $node ($doc->findnodes('//*[@RUN_AS]')) {
+        my $run_as = $node->getAttribute('RUN_AS');
+        $run_as_values{$run_as} = 1 if defined $run_as;
+    }
+
+    # Retourner la liste unique des RUN_AS sous forme "val1:val2:val3"
+    return join(":", sort keys %run_as_values);
+}
+
+sub get_unique_shout_dest {
+    my ($schedtable_file) = @_;
+    my %dest_values;
+
+    # Charger et parser le fichier XML
+    my $parser = XML::LibXML->new();
+    my $doc;
+    eval { $doc = $parser->parse_file($schedtable_file); };
+    if ($@) {
+        die "Erreur XML dans $schedtable_file : $@";
+    }
+
+    # Récupérer toutes les valeurs de DEST dans les balises SHOUT
+    foreach my $node ($doc->findnodes('//SHOUT[@DEST]')) {
+        my $dest = $node->getAttribute('DEST');
+        if (defined $dest && $dest ne "EM") {  # Ignorer EM
+            $dest_values{$dest} = 1;
+        }
+    }
+
+    # Retourner les valeurs uniques sous forme "DEST1:DEST2:DEST3"
+    return join(":", sort keys %dest_values);
+}
+
 # Lister les fichiers .tar
 opendir(my $dh, $POOL_DIR) or die "Impossible d'ouvrir $POOL_DIR : $!";
 my @archives = grep { /.tar$/ && -f File::Spec->catfile($POOL_DIR, $_) } readdir($dh);
@@ -246,6 +300,18 @@ foreach my $tar_file (@archives) {
     # Récupérer le nombre de conditions
     my $list_cond = extract_list_cond($schedtable_file);
     my $nb_cond = ($list_cond) ? scalar(split /:/, $list_cond) : 0;
+	
+	# Recuperer folder type
+	my $folder_type = get_folder_type($schedtable_file);
+	print "Type du folder : $folder_type\n";
+	
+	# Recuperer RUN_AS unique
+	my $run_as_users = get_unique_run_as($schedtable_file);
+	print "Utilisateurs RUN_AS : $run_as_users\n";
+
+	#recup shout unique sans EM 
+	my $shout_destinations = get_unique_shout_dest($schedtable_file);
+	print "Destinations SHOUT : $shout_destinations\n";
 
     #log_message("INFO", "APPL_TYPE: $appl_type");
     #log_message("INFO", "NB_COND: $nb_cond");
@@ -259,7 +325,6 @@ foreach my $tar_file (@archives) {
     my $ad_nod_csv = check_dependencies("EXP_NOD", $exp_vars{EXP_NOD}, $index_file, 1, "SRV_PRIMAIRE");
     my $ad_lib_csv = check_dependencies("EXP_LIB", $exp_vars{EXP_LIB}, $index_file, 1);
 
-
     # Si aucune dépendance n'a été trouvée, on les initialise à une chaîne vide
     $ad_cal_csv = "" unless defined $ad_cal_csv;
     $ad_nid_csv = "" unless defined $ad_nid_csv;
@@ -271,6 +336,7 @@ foreach my $tar_file (@archives) {
     log_message("INFO", "Dépendances NOD=>EXP_TABLE: $ad_nod_csv");
     log_message("INFO", "Dépendances LIB=>EXP_TABLE: $ad_lib_csv");
 	log_message("INFO", "$exp_vars{EXP_DC}");
+
 	
 	# Vérification des dépendances
 	my $condition_dependencies = check_condition_in_other_schedtables($list_cond, $exp_vars{"EXP_DC"}, $schedtable_file);
@@ -280,7 +346,8 @@ foreach my $tar_file (@archives) {
     close $csv;
 }
 #echo "$EXP_TABLE;$FOLDER_TYPE;$EXP_DC;$LAST_UPLOAD;$EXP_JOBS;$NB_EXP_NOD;$NB_EXP_NID;$NB_EXP_LIB;$NB_EXP_RES;$NB_COND;$NB_EXP_CAL;$APPL_TYPE;$USERDAILY;$EXP_SHOUT;$RUN_AS;$AD_CAL_CSV;$AD_LIB_CSV;$AD_NOD_CSV;$AD_NOD_NID;$AD_RES_CSV;$AD_USERDAILY_CSV;$AD_COND_CSV" >> Final.csv
-#a inclure : FOLDER_TYPE
-#			 SHOUT
-#			 RUN AS
+#a inclure : FOLDER_TYPE fonction : OK
+#			 SHOUT fonction : OK
+#			 RUN AS fonction : OK
+#			 user la fonction de count pr le reste
 
