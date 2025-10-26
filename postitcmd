@@ -101,4 +101,36 @@ fi
 ### qui consomme pcu ?
 ps -eo pid,comm,%cpu --sort=-%cpu | head
 
+### script perso
+#--------------------------
+#!/bin/bash
 
+# Vérification des paramètres
+if [[ $# -eq 1 && $1 != "-f" ]]; then
+    vars=("$1")
+elif [[ $1 == "-f" && -n $2 && -f $2 ]]; then
+    mapfile -t vars < "$2"
+else
+    echo "Usage: $0 <variable> | -f <fichier>"
+    exit 1
+fi
+
+# Récapitulatif
+echo "Les habilitations suivantes vont être créées :"
+for var in "${vars[@]}"; do
+    echo "  - $var"
+done
+
+# Confirmation utilisateur
+read -rp "Confirmer la création ? (Y/n) " confirm
+if [[ ! $confirm =~ ^[Yy]$ ]]; then
+    echo "Opération annulée."
+    exit 0
+fi
+
+# Boucle de traitement
+for var in "${vars[@]}"; do
+    echo "Création des habilitations pour: $var"
+    # Ici ton code métier...
+done
+#--------------------------
