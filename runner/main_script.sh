@@ -2,14 +2,14 @@
 
 set -u
 
-# ------------------------------------------------------------------
-# Répertoires
-# ------------------------------------------------------------------
+# ================================================================
+# INITIALISATION
+# ================================================================
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-CONFIG_FILE="$BASE_DIR/config/servers.conf"
-SCRIPTS_DIR="$BASE_DIR/scripts"
+source "$BASE_DIR/config/servers.conf"
+
 LOG_DIR="$BASE_DIR/logs"
 LOCK_DIR="$BASE_DIR/locks"
 
@@ -18,28 +18,12 @@ LOG_LOCK="$LOCK_DIR/logs.lock"
 
 mkdir -p "$LOG_DIR" "$LOCK_DIR"
 
-# ------------------------------------------------------------------
-# Chargement de la configuration
-# ------------------------------------------------------------------
-
-if [[ ! -f "$CONFIG_FILE" ]]; then
-    echo "Configuration introuvable : $CONFIG_FILE" >&2
-    exit 1
-fi
-
-source "$CONFIG_FILE"
-
-# ------------------------------------------------------------------
-# Identifiant unique du lancement
-#
-# Généré une seule fois et conservé pour tous les traitements.
-# ------------------------------------------------------------------
-
+# Un RUN_ID unique par lancement, partagé par tous les traitements.
 RUN_ID="$(date '+%Y%m%d_%H%M%S')_$$"
 
-# ------------------------------------------------------------------
-# Gestion des logs
-# ------------------------------------------------------------------
+# ================================================================
+# JOURNALISATION
+# ================================================================
 
 log() {
     local level="$1"
@@ -50,41 +34,41 @@ log() {
     timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
 
     (
-        flock -x 200
+        # Verrou très court : écriture et rotation uniquement.
+        flock -x 200 || exit 1
 
-        # Rotation si le fichier dépasse la taille maximale
+        # Rotation du fichier si nécessaire.
         if [[ -f "$LOG_FILE" ]]; then
             local size
             size="$(stat -c '%s' "$LOG_FILE" 2>/dev/null || echo 0)"
 
             if (( size >= MAX_LOG_SIZE )); then
                 local archive
-                archive="$LOG_DIR/logs_ctm_$(date '+%Y%m%d_%H%M%S')_${$}.log"
+                archive="$LOG_DIR/logs_ctm_$(date '+%Y%m%d_%H%M%S_%N')_$$.log"
 
-                mv "$LOG_FILE" "$archive"
-                gzip "$archive"
+                if mv "$LOG_FILE" "$archive"; then
+                    gzip "$archive"
+                fi
             fi
         fi
 
-        printf '[%s] [%s] [%s] run_id=%s' \
-            "$timestamp" "$level" "$event" "$RUN_ID" >> "$LOG_FILE"
+        {
+            printf '[%s] [%s] [%s] run_id=%s' \
+                "$timestamp" "$level" "$event" "$RUN_ID"
 
-        for field in "$@"; do
-            printf ' %s' "$field" >> "$LOG_FILE"
-        done
+            for field in "$@"; do
+                printf ' %s' "$field"
+            done
 
-        printf '\n' >> "$LOG_FILE"
+            printf '\n'
+        } >> "$LOG_FILE"
 
     ) 200>"$LOG_LOCK"
 }
 
-# ------------------------------------------------------------------
-# Vérification du port Control-M
-#
-# Retourne :
-#   0 : serveur actif
-#   1 : serveur ne répond pas
-# ------------------------------------------------------------------
+# ================================================================
+# DETECTION DU SERVEUR ACTIF
+# ================================================================
 
 is_active() {
     local host="$1"
@@ -92,6 +76,7 @@ is_active() {
 
     nc -z -w "$NC_TIMEOUT" "$host" "$ACTIVE_PORT" \
         >/dev/null 2>&1
+
     rc=$?
 
     if (( rc == 0 )); then
@@ -100,26 +85,25 @@ is_active() {
             "port=$ACTIVE_PORT" \
             "rc=0" \
             "status=RESPONDS"
+
         return 0
-    else
-        log INFO NC_CHECK \
-            "server=$host" \
-            "port=$ACTIVE_PORT" \
-            "rc=$rc" \
-            "status=NO_RESPONSE"
-        return 1
     fi
+
+    log INFO NC_CHECK \
+        "server=$host" \
+        "port=$ACTIVE_PORT" \
+        "rc=$rc" \
+        "status=NO_RESPONSE"
+
+    return 1
 }
 
-# ------------------------------------------------------------------
-# Sélection d'un serveur dans une paire
+# ================================================================
+# SELECTION ACTIF / PASSIF
 #
-# mode ACTIVE  : retourne le serveur actif
-# mode BACKUP  : retourne le serveur passif
-#
-# Si les deux serveurs sont indisponibles :
-# aucun serveur n'est retourné.
-# ------------------------------------------------------------------
+# ACTIVE : retourne le serveur actif.
+# BACKUP : retourne le serveur passif.
+# ================================================================
 
 select_server() {
     local server_a="$1"
@@ -129,46 +113,79 @@ select_server() {
     local active_a=0
     local active_b=0
 
-    is_active "$server_a" && active_a=1
-    is_active "$server_b" && active_b=1
+    if is_active "$server_a"; then
+        active_a=1
+    fi
 
+    if is_active "$server_b"; then
+        active_b=1
+    fi
+
+    # Situation anormale : les deux répondent.
     if (( active_a == 1 && active_b == 1 )); then
         log ERROR PAIR_INCONSISTENT \
             "server_a=$server_a" \
             "server_b=$server_b"
+
         return 1
     fi
 
+    # Le serveur A est actif.
     if (( active_a == 1 )); then
         if [[ "$mode" == "ACTIVE" ]]; then
             echo "$server_a"
         else
             echo "$server_b"
         fi
+
         return 0
     fi
 
+    # Le serveur B est actif.
     if (( active_b == 1 )); then
         if [[ "$mode" == "ACTIVE" ]]; then
             echo "$server_b"
         else
             echo "$server_a"
         fi
+
         return 0
     fi
 
+    # Aucun serveur actif.
     log WARN SERVER_UNAVAILABLE \
         "servers=$server_a,$server_b"
 
     return 1
 }
 
-# ------------------------------------------------------------------
-# Exécution du script métier sur l'hôte d'outillage
+# ================================================================
+# RECHERCHE D'UNE PAIRE
+# ================================================================
+
+find_pair() {
+    local target="$1"
+    local entry
+    local pair server_a server_b
+
+    for entry in "${PROD_PAIRS[@]}"; do
+        IFS=':' read -r pair server_a server_b <<< "$entry"
+
+        if [[ "$pair" == "$target" ]]; then
+            echo "$server_a:$server_b"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+# ================================================================
+# EXECUTION DU SCRIPT METIER
 #
-# Le serveur Control-M sélectionné est transmis en argument $1.
-# Un verrou est créé par fonction et par serveur.
-# ------------------------------------------------------------------
+# Exécution locale sur le serveur d'outillage.
+# Le serveur Control-M est transmis en argument $1.
+# ================================================================
 
 run() {
     local host="$1"
@@ -182,7 +199,7 @@ run() {
 
         lock_file="$LOCK_DIR/${FUNCTION}_${host}.lock"
 
-        # Verrouillage non bloquant
+        # Un verrou par fonction et par serveur.
         exec 200>"$lock_file"
 
         if ! flock -n 200; then
@@ -190,7 +207,8 @@ run() {
                 "server=$host" \
                 "function=$FUNCTION"
 
-            exit 2
+            # Code réservé au moteur pour signaler un traitement ignoré.
+            exit 200
         fi
 
         log INFO LOCK_ACQUIRED \
@@ -204,7 +222,7 @@ run() {
             "function=$FUNCTION" \
             "pid=$BASHPID"
 
-        # Exécution locale du script métier
+        # Le script métier gère lui-même ses opérations.
         bash "$SCRIPT" "$host"
         rc=$?
 
@@ -229,30 +247,9 @@ run() {
     )
 }
 
-# ------------------------------------------------------------------
-# Recherche d'une paire de production
-# ------------------------------------------------------------------
-
-find_pair() {
-    local target="$1"
-    local entry
-    local pair server_a server_b
-
-    for entry in "${PROD_PAIRS[@]}"; do
-        IFS=':' read -r pair server_a server_b <<< "$entry"
-
-        if [[ "$pair" == "$target" ]]; then
-            echo "$server_a:$server_b"
-            return 0
-        fi
-    done
-
-    return 1
-}
-
-# ------------------------------------------------------------------
-# Paramètres
-# ------------------------------------------------------------------
+# ================================================================
+# PARAMETRES
+# ================================================================
 
 SERVER_TARGET=""
 FUNCTION=""
@@ -270,7 +267,7 @@ while getopts ":s:f:h" opt; do
             exit 0
             ;;
         :)
-            echo "Option -$OPTARG : argument manquant" >&2
+            echo "Argument manquant pour -$OPTARG" >&2
             exit 1
             ;;
         \?)
@@ -280,17 +277,13 @@ while getopts ":s:f:h" opt; do
     esac
 done
 
-# ------------------------------------------------------------------
-# Contrôle des paramètres
-# ------------------------------------------------------------------
-
-# Si -s est absent ou vide, aucune action.
+# Pas de serveur ciblé : aucune action.
 if [[ -z "$SERVER_TARGET" ]]; then
     exit 0
 fi
 
 if [[ -z "$FUNCTION" ]]; then
-    echo "La fonction -f est obligatoire." >&2
+    echo "L'option -f est obligatoire." >&2
     exit 1
 fi
 
@@ -299,105 +292,88 @@ if [[ ! "$FUNCTION" =~ ^[a-zA-Z0-9_-]+$ ]]; then
     exit 1
 fi
 
-SCRIPT="$SCRIPTS_DIR/${FUNCTION}.sh"
+SCRIPT="$BASE_DIR/scripts/${FUNCTION}.sh"
 
 if [[ ! -f "$SCRIPT" ]]; then
     echo "Script métier introuvable : $SCRIPT" >&2
     exit 1
 fi
 
-# ------------------------------------------------------------------
-# Début de la demande
-# ------------------------------------------------------------------
+# ================================================================
+# DEBUT DE LA DEMANDE
+# ================================================================
 
 log INFO REQUEST_START \
     "function=$FUNCTION" \
     "target=$SERVER_TARGET" \
     "pid=$$"
 
-# ------------------------------------------------------------------
-# Construction de la liste des serveurs à traiter
-# ------------------------------------------------------------------
+# ================================================================
+# CONSTRUCTION DE LA LISTE DES SERVEURS
+# ================================================================
 
 declare -a JOBS=()
 
 case "$SERVER_TARGET" in
 
-    # --------------------------------------------------------------
-    # Tous les serveurs actifs de production + préproduction
-    # --------------------------------------------------------------
-
+    # Tous les actifs de production + préproduction.
     ALL)
 
         for entry in "${PROD_PAIRS[@]}"; do
             IFS=':' read -r pair server_a server_b <<< "$entry"
 
-            host="$(select_server "$server_a" "$server_b" ACTIVE)"
-
-            if [[ -n "$host" ]]; then
+            if host="$(select_server "$server_a" "$server_b" ACTIVE)"; then
                 JOBS+=("$host")
             fi
         done
 
-        # Préproduction : serveurs autonomes
         JOBS+=("${PREPROD_SERVERS[@]}")
 
         ;;
 
-    # --------------------------------------------------------------
-    # Serveurs passifs de production uniquement
-    # --------------------------------------------------------------
-
+    # Passifs de production uniquement.
     BACKUP)
 
         for entry in "${PROD_PAIRS[@]}"; do
             IFS=':' read -r pair server_a server_b <<< "$entry"
 
-            host="$(select_server "$server_a" "$server_b" BACKUP)"
-
-            if [[ -n "$host" ]]; then
+            if host="$(select_server "$server_a" "$server_b" BACKUP)"; then
                 JOBS+=("$host")
             fi
         done
 
         ;;
 
-    # --------------------------------------------------------------
-    # Alias d'une paire : sélection du serveur actif
-    # --------------------------------------------------------------
-
-    CTMP*)
+    # Nom d'une paire : sélection de son actif.
+    CTMP[0-9][0-9])
 
         if pair_info="$(find_pair "$SERVER_TARGET")"; then
-
             IFS=':' read -r server_a server_b <<< "$pair_info"
 
-            host="$(select_server "$server_a" "$server_b" ACTIVE)"
-
-            if [[ -n "$host" ]]; then
+            if host="$(select_server "$server_a" "$server_b" ACTIVE)"; then
                 JOBS+=("$host")
             fi
-
         else
-            # Serveur explicitement ciblé
-            JOBS+=("$SERVER_TARGET")
+            log ERROR UNKNOWN_PAIR "target=$SERVER_TARGET"
         fi
 
         ;;
 
-    # --------------------------------------------------------------
-    # Serveur explicitement ciblé
-    # --------------------------------------------------------------
-
+    # Serveur explicitement ciblé.
     *)
-        JOBS+=("$SERVER_TARGET")
+        if [[ "$SERVER_TARGET" =~ ^[a-zA-Z0-9.-]+$ ]]; then
+            JOBS+=("$SERVER_TARGET")
+        else
+            echo "Nom de serveur invalide." >&2
+            exit 1
+        fi
         ;;
 
 esac
 
-# ------------------------------------------------------------------
-# Aucun serveur disponible ou sélectionné
-# ------------------------------------------------------------------
+# ================================================================
+# AUCUN SERVEUR SELECTIONNE
+# ================================================================
 
 if (( ${#JOBS[@]} == 0 )); then
     log WARN NO_SERVER_SELECTED \
@@ -408,14 +384,17 @@ if (( ${#JOBS[@]} == 0 )); then
         "function=$FUNCTION" \
         "target=$SERVER_TARGET" \
         "total=0" \
+        "success=0" \
+        "failed=0" \
+        "skipped=0" \
         "rc=0"
 
     exit 0
 fi
 
-# ------------------------------------------------------------------
-# Lancement parallèle
-# ------------------------------------------------------------------
+# ================================================================
+# LANCEMENT PARALLELE
+# ================================================================
 
 declare -a PIDS=()
 
@@ -427,11 +406,12 @@ for host in "${JOBS[@]}"; do
 
     run "$host" &
     PIDS+=("$!")
+
 done
 
-# ------------------------------------------------------------------
-# Attente des traitements et bilan
-# ------------------------------------------------------------------
+# ================================================================
+# ATTENTE ET BILAN
+# ================================================================
 
 TOTAL=${#PIDS[@]}
 SUCCESS=0
@@ -448,7 +428,7 @@ for pid in "${PIDS[@]}"; do
         0)
             ((SUCCESS += 1))
             ;;
-        2)
+        200)
             ((SKIPPED += 1))
             ;;
         *)
